@@ -13,7 +13,7 @@ const TopNavigation = () => {
     { label: "Membresías", path: "/membresias", icon: CreditCard },
     { label: "Reportes", path: "/reportes", icon: FileText },
     { label: "Vencimientos", path: "/vencimientos", icon: AlertTriangle },
-    { label: "Pagos", path: "/pagos", icon: DollarSign },
+   // { label: "Pagos", path: "/pagos", icon: DollarSign },
   ];
 
   const isActive = (path: string) => location.pathname === path;

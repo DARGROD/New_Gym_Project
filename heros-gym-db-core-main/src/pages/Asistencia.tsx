@@ -1,154 +1,246 @@
-import { useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { useToast } from "@/hooks/use-toast";
-import { LogIn } from "lucide-react";
-import TopNavigation from "@/components/TopNavigation";
+import React, { useState } from "react";
+import { supabase } from "../integrations/supabase/client";
+import { useToast } from "../hooks/use-toast";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/card";
+import { Label } from "../components/ui/label";
+import { Input } from "../components/ui/input";
+import { Button } from "../components/ui/button";
+import { parseISO, differenceInCalendarDays } from "date-fns";
+
+interface Client {
+  id: string;
+  national_id: string;
+  first_name: string;
+  last_name: string;
+}
+
+interface Membership {
+  id: string;
+  end_date: string;
+  status: string;
+  membership_plans: {
+    name: string;
+    duration_days: number;
+  } | null;
+}
+
+interface UserMessage {
+  type: "success" | "warning" | "error";
+  title: string;
+  description: string;
+}
 
 const Asistencia = () => {
-  const [cedula, setCedula] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [nationalId, setNationalId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [userMessage, setUserMessage] = useState<UserMessage | null>(null);
   const { toast } = useToast();
 
-  const registrarAsistencia = async (e: React.FormEvent) => {
+  const checkMembershipStatus = async (nationalId: string) => {
+    setLoading(true);
+    setUserMessage(null);
+
+    try {
+      const { data: clientData, error: clientError } = await supabase
+        .from("clients")
+        .select("id, first_name, last_name")
+        .eq("national_id", nationalId)
+        .single();
+
+      if (clientError || !clientData) {
+        setUserMessage({
+          type: "error",
+          title: "Cliente no encontrado",
+          description:
+            "No se encontró un cliente con la cédula proporcionada.",
+        });
+        setLoading(false);
+        return;
+      }
+
+      const { data: membershipData, error: membershipError } = await supabase
+        .from("memberships")
+        .select(
+          `
+          end_date,
+          status,
+          membership_plans (
+            name,
+            duration_days
+          )
+        `
+        )
+        .eq("member_id", clientData.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (membershipError || !membershipData) {
+        setUserMessage({
+          type: "error",
+          title: "Membresía no encontrada",
+          description: "El cliente no tiene una membresía activa.",
+        });
+        setLoading(false);
+        return;
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const endDate = parseISO(membershipData.end_date);
+      endDate.setHours(0, 0, 0, 0);
+      const diffDays = differenceInCalendarDays(endDate, today);
+
+      let message: UserMessage;
+      let canRegister = false;
+
+      const clientFullName = `${clientData.first_name} ${clientData.last_name}`;
+      const formattedEndDate = new Date(
+        membershipData.end_date
+      ).toLocaleDateString("es-CR");
+
+      if (diffDays < 0) {
+        message = {
+          type: "error",
+          title: `¡Hola ${clientFullName}!`,
+          description: `Tu membresía ha expirado desde el ${formattedEndDate}. Por favor, renueva para poder acceder.`,
+        };
+      } else if (diffDays === 0) {
+        message = {
+          type: "error",
+          title: `¡Hola ${clientFullName}!`,
+          description: `Tu membresía vence hoy. Por favor, renueva para poder acceder.`,
+        };
+      } else if (diffDays > 0 && diffDays <= 3) {
+        message = {
+          type: "warning",
+          title: `¡Bienvenido ${clientFullName}!`,
+          description: `Tu membresía vence en ${diffDays} día(s). Se vence el ${formattedEndDate}.`,
+        };
+        canRegister = true;
+      } else {
+        message = {
+          type: "success",
+          title: `¡Bienvenido ${clientFullName}!`,
+          description: `Tu membresía está activa. Vence el ${formattedEndDate}.`,
+        };
+        canRegister = true;
+      }
+
+      setUserMessage(message);
+
+      if (canRegister) {
+        const { error: attendanceError } = await supabase
+          .from("attendance")
+          .insert({
+            member_id: clientData.id,
+            checked_in_at: new Date().toISOString(),
+          });
+
+        if (attendanceError) {
+          toast({
+            title: "Error al registrar asistencia",
+            description: "Hubo un problema al guardar la asistencia.",
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Asistencia Registrada",
+            description: `${clientData.first_name} ha registrado su asistencia.`,
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error al verificar la membresía:", error);
+      setUserMessage({
+        type: "error",
+        title: "Error del Sistema",
+        description:
+          "No se pudo verificar el estado de la membresía. Intenta de nuevo.",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegisterAttendance = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!cedula.trim()) {
+    if (!nationalId) {
       toast({
         title: "Error",
-        description: "Por favor ingrese una cédula",
-        variant: "destructive"
+        description: "Por favor, ingrese la cédula del cliente.",
+        variant: "destructive",
       });
       return;
     }
-
-    setIsLoading(true);
-    try {
-      // Simulación de registro de asistencia
-      // Aquí se validará si el cliente existe y tiene membresía activa
-      const clientesMuestra = [
-        {
-          id: "1",
-          national_id: "1-2345-6789",
-          first_name: "Juan",
-          last_name: "Pérez",
-          status: "active",
-          memberships: [{
-            status: "active",
-            end_date: "2024-12-31"
-          }]
-        },
-        {
-          id: "2",
-          national_id: "2-3456-7890",
-          first_name: "María",
-          last_name: "González",
-          status: "active",
-          memberships: [{
-            status: "active",
-            end_date: "2024-11-15"
-          }]
-        }
-      ];
-
-      const cliente = clientesMuestra.find(c => c.national_id === cedula);
-
-      if (!cliente) {
-        toast({
-          title: "Cliente no encontrado",
-          description: "No se encontró un cliente con esa cédula",
-          variant: "destructive"
-        });
-        return;
-      }
-
-      const validMembresia = validarMembresia(cliente.memberships);
-      if (!validMembresia.valid) {
-        toast({
-          title: "Membresía no válida",
-          description: validMembresia.message,
-          variant: "destructive"
-        });
-        return;
-      }
-
-      toast({
-        title: "Asistencia registrada",
-        description: `Entrada registrada para ${cliente.first_name} ${cliente.last_name}`,
-      });
-
-      setCedula("");
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "No se pudo registrar la asistencia",
-        variant: "destructive"
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-
-  const validarMembresia = (memberships: any[]) => {
-    if (!memberships || memberships.length === 0) return { valid: false, message: "Sin membresía activa" };
-    
-    const activeMembresia = memberships.find(m => m.status === 'active');
-    if (!activeMembresia) return { valid: false, message: "Sin membresía activa" };
-    
-    const endDate = new Date(activeMembresia.end_date);
-    const today = new Date();
-    
-    if (endDate < today) return { valid: false, message: "Membresía vencida" };
-    
-    return { valid: true, message: "Membresía válida" };
+    checkMembershipStatus(nationalId);
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <TopNavigation />
-      <div className="p-6">
-        <div className="max-w-md mx-auto">
-          <div className="mb-8 text-center">
-            <h1 className="text-3xl font-bold text-primary mb-2">Control de Asistencia</h1>
-            <p className="text-muted-foreground">Registrar entrada por cédula</p>
-          </div>
+    <div className="relative min-h-screen">
+      {/* Video de fondo */}
+      <video
+        autoPlay
+        loop
+        muted
+        playsInline
+        className="absolute top-0 left-0 w-full h-full object-cover -z-10"
+      >
+        <source src="/Hero's Gym Main Video.mp4" type="video/mp4" />
+        Tu navegador no soporta videos en HTML5.
+      </video>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <LogIn className="h-5 w-5" />
-                Registrar Entrada
-              </CardTitle>
-              <CardDescription>Ingrese la cédula del cliente para registrar su entrada</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={registrarAsistencia} className="space-y-4">
-                <div>
-                  <Label htmlFor="cedula">Cédula</Label>
-                  <Input
-                    id="cedula"
-                    value={cedula}
-                    onChange={(e) => setCedula(e.target.value)}
-                    placeholder="Ej: 1-2345-6789"
-                    required
-                  />
-                </div>
+      {/* Contenido centrado */}
+      <div className="flex items-center justify-center min-h-screen px-4">
+        <Card className="w-full max-w-md bg-white/70 shadow-lg backdrop-blur-sm">
+          <CardHeader>
+            <CardTitle className="text-2xl text-center">
+              Registro de Asistencia
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col items-center">
+            <form onSubmit={handleRegisterAttendance} className="w-full">
+              <Label htmlFor="national_id" className="text-lg">
+                Cédula del Cliente
+              </Label>
+              <Input
+                id="national_id"
+                type="text"
+                value={nationalId}
+                onChange={(e) => setNationalId(e.target.value)}
+                placeholder="Ingresa la cédula"
+                className="mt-2 text-center"
+              />
+              <Button
+                type="submit"
+                className="w-full mt-4 bg-primary hover:bg-primary/90"
+                disabled={loading}
+              >
+                {loading ? "Verificando..." : "Registrar Asistencia"}
+              </Button>
+            </form>
 
-                <Button 
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full"
-                  size="lg"
-                >
-                  {isLoading ? "Registrando..." : "Registrar Entrada"}
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
+            {userMessage && (
+              <div
+                className={`mt-4 p-4 rounded-md w-full text-center ${
+                  userMessage.type === "success"
+                    ? "bg-green-100 text-green-800"
+                    : userMessage.type === "warning"
+                    ? "bg-yellow-100 text-yellow-800"
+                    : "bg-red-100 text-red-800"
+                }`}
+              >
+                <h3 className="font-bold">{userMessage.title}</h3>
+                <p>{userMessage.description}</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

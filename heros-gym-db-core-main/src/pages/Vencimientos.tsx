@@ -1,222 +1,479 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { AlertTriangle, Calendar, Phone, Mail } from "lucide-react";
-import TopNavigation from "@/components/TopNavigation";
+import { useState, useEffect } from "react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Button } from "../components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { ScrollArea } from "../components/ui/scroll-area";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
+import { Label } from "../components/ui/label";
+import { Badge } from "../components/ui/badge";
+import { supabase } from "../integrations/supabase/client";
+import { useToast } from "../hooks/use-toast";
+import TopNavigation from "../components/TopNavigation";
+import { format, differenceInCalendarDays } from "date-fns";
+import { es } from "date-fns/locale";
+
+// Helper function to get badge variant based on days left
+const getBadgeVariant = (diffDays) => {
+  if (diffDays === undefined) return "default";
+
+  if (diffDays <= 0) {
+    if (diffDays === 0) return "destructive"; // Vence hoy
+    return "outline"; // Venció hace más tiempo
+  }
+  if (diffDays === 1) return "destructive"; // Vence mañana
+  if (diffDays <= 3) return "secondary";   // 2-3 días
+  if (diffDays <= 7) return "default";     // 4-7 días
+
+  return "secondary"; // fallback
+};
+
+// Helper function to get badge text
+const getBadgeText = (diffDays) => {
+  if (diffDays === 0) return "Vence hoy";
+  if (diffDays === 1) return "Vence mañana";
+  return `Vence en ${diffDays} días`;
+};
+
+// Helper function to get expired badge text
+const getExpiredBadgeText = (diffDays) => {
+  if (diffDays === -1) return "Venció ayer";
+  if (diffDays === 0) return "Venció hoy";
+  return `Venció hace ${Math.abs(diffDays)} días`;
+};
+
 
 const Vencimientos = () => {
-  // Datos de muestra de membresías próximas a vencer
-  const proximosVencimientos = [
-    {
-      id: "1",
-      cliente: {
-        first_name: "Ana",
-        last_name: "Martínez",
-        national_id: "1-1234-5678",
-        phone: "8888-1111",
-        email: "ana@email.com"
-      },
-      membresia: {
-        plan_name: "Mensual",
-        end_date: "2024-09-02",
-        status: "active"
-      },
-      diasRestantes: 3
-    },
-    {
-      id: "2",
-      cliente: {
-        first_name: "Carlos",
-        last_name: "Rodríguez",
-        national_id: "2-2345-6789",
-        phone: "8888-2222",
-        email: "carlos@email.com"
-      },
-      membresia: {
-        plan_name: "Familiar",
-        end_date: "2024-09-05",
-        status: "active"
-      },
-      diasRestantes: 6
-    },
-    {
-      id: "3",
-      cliente: {
-        first_name: "María",
-        last_name: "González",
-        national_id: "3-3456-7890",
-        phone: "8888-3333",
-        email: "maria@email.com"
-      },
-      membresia: {
-        plan_name: "Quincena",
-        end_date: "2024-09-01",
-        status: "active"
-      },
-      diasRestantes: 2
-    },
-    {
-      id: "4",
-      cliente: {
-        first_name: "Luis",
-        last_name: "Herrera",
-        national_id: "4-4567-8901",
-        phone: "8888-4444",
-        email: "luis@email.com"
-      },
-      membresia: {
-        plan_name: "Semana",
-        end_date: "2024-08-31",
-        status: "active"
-      },
-      diasRestantes: 1
-    }
-  ];
+  const [expiringSoon, setExpiringSoon] = useState([]);
+  const [expired, setExpired] = useState([]);
+  const [totalActive, setTotalActive] = useState(0);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [selectedMembership, setSelectedMembership] = useState(null);
+  const [membershipPlans, setMembershipPlans] = useState([]);
+  const [newPlan, setNewPlan] = useState("");
+  const [newPaymentMethod, setNewPaymentMethod] = useState("cash");
+  const [pageSizeExpiring, setPageSizeExpiring] = useState("5");
+  const [pageSizeExpired, setPageSizeExpired] = useState("5");
+  const { toast } = useToast();
 
-  const getUrgencyColor = (dias: number) => {
-    if (dias <= 1) return "bg-red-100 text-red-800 border-red-200";
-    if (dias <= 3) return "bg-orange-100 text-orange-800 border-orange-200";
-    if (dias <= 7) return "bg-yellow-100 text-yellow-800 border-yellow-200";
-    return "bg-blue-100 text-blue-800 border-blue-200";
+  const fetchMembershipPlans = async () => {
+    const { data, error } = await supabase
+      .from('membership_plans')
+      .select('*');
+
+    if (!error) {
+      setMembershipPlans(data);
+    }
   };
 
-  const getUrgencyIcon = (dias: number) => {
-    if (dias <= 3) return <AlertTriangle className="h-4 w-4" />;
-    return <Calendar className="h-4 w-4" />;
+  const fetchExpiringMemberships = async () => {
+    const { data: clients, error } = await supabase
+      .from('clients')
+      .select(`
+        id,
+        first_name,
+        last_name,
+        memberships (
+          id,
+          start_date,
+          end_date,
+          status,
+          payments,
+          created_at,
+          plan_id,
+          membership_plans (
+            name,
+            duration_days
+          )
+        )
+      `);
+
+    if (error) {
+      console.error('Error fetching memberships:', error);
+      toast({
+        title: "Error al cargar membresías",
+        description: "No se pudieron cargar los datos de la base de datos.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const latestMemberships = clients?.flatMap(client => {
+      const sortedMemberships = client.memberships?.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const latest = sortedMemberships?.[0] ? { ...sortedMemberships[0], client } : null;
+      return latest ? [latest] : [];
+    }) || [];
+
+    const expiring = [];
+    const expired = [];
+    let activeCount = 0;
+
+    latestMemberships.forEach(membership => {
+      const endDate = new Date(membership.end_date);
+      const diffDays = differenceInCalendarDays(endDate, today);
+      
+      const isSession = membership.membership_plans?.name.toLowerCase().includes('sesion');
+
+      if (isSession) {
+        // Lógica específica para membresías de sesión
+        const startDate = new Date(membership.start_date);
+        startDate.setHours(0,0,0,0);
+        if (differenceInCalendarDays(today, startDate) >= 1) {
+            expired.push({ ...membership, diffDays: differenceInCalendarDays(endDate, today) });
+            if (membership.status !== 'expired') {
+                supabase
+                    .from('memberships')
+                    .update({ status: 'expired' })
+                    .eq('id', membership.id)
+                    .then(({ error }) => {
+                        if (error) console.error("Error updating membership status:", error);
+                    });
+            }
+        } else if (differenceInCalendarDays(endDate, today) >= 0) {
+            expiring.push({ ...membership, diffDays });
+        }
+      } else {
+        // Lógica general para otras membresías
+        if (diffDays < 0) {
+          expired.push({ ...membership, diffDays });
+          if (membership.status !== 'expired') {
+            supabase
+                .from('memberships')
+                .update({ status: 'expired' })
+                .eq('id', membership.id)
+                .then(({ error }) => {
+                    if (error) console.error("Error updating membership status:", error);
+                });
+          }
+        } else if (diffDays >= 0 && diffDays <= 7) {
+          expiring.push({ ...membership, diffDays });
+        }
+      }
+      
+      if (membership.status === 'active' && endDate >= today) {
+        activeCount++;
+      }
+    });
+    
+    // Sort expiringSoon by diffDays (closest to expiring first)
+    expiring.sort((a, b) => a.diffDays - b.diffDays);
+    // Sort expired by diffDays (most recently expired first)
+    expired.sort((a, b) => b.diffDays - a.diffDays);
+    
+    setExpiringSoon(expiring);
+    setExpired(expired);
+    setTotalActive(activeCount);
+  };
+  
+  useEffect(() => {
+    fetchMembershipPlans();
+    fetchExpiringMemberships();
+  }, []);
+
+  const handleRenewMembership = (membership) => {
+    setSelectedMembership(membership);
+    setNewPlan(membership.plan_id);
+    setNewPaymentMethod(membership.payments);
+    setIsDialogOpen(true);
+  };
+  
+  const handleConfirmRenewal = async () => {
+    if (!selectedMembership || !newPlan || !newPaymentMethod) {
+      toast({
+        title: "Error",
+        description: "Por favor complete todos los campos.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      // Obtener la duración del plan seleccionado
+      const selectedPlanData = membershipPlans.find(plan => plan.id === newPlan);
+      if (!selectedPlanData) {
+        throw new Error("Plan de membresía no encontrado.");
+      }
+
+      const today = new Date();
+      const newEndDate = new Date(today);
+      newEndDate.setDate(today.getDate() + selectedPlanData.duration_days);
+
+      const { error } = await supabase
+        .from('memberships')
+        .insert({
+          member_id: selectedMembership.client.id,
+          plan_id: newPlan,
+          start_date: today.toISOString(),
+          end_date: newEndDate.toISOString(),
+          status: 'active',
+          payments: newPaymentMethod
+        });
+
+      if (error) throw error;
+      
+      toast({
+        title: "Membresía Renovada",
+        description: `La membresía para ${selectedMembership.client.first_name} ha sido renovada exitosamente.`,
+        className: "bg-green-500 text-white",
+        duration: 3000,
+      });
+
+      setIsDialogOpen(false);
+      fetchExpiringMemberships();
+
+    } catch (error: any) {
+      toast({
+        title: "Error al renovar",
+        description: error.message,
+        variant: "destructive"
+      });
+    }
   };
 
   return (
     <div className="min-h-screen bg-background">
       <TopNavigation />
-      <div className="p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-primary mb-2">Próximos a Vencer</h1>
-          <p className="text-muted-foreground">Membresías que expiran en los próximos días</p>
+      <div className="p-6 max-w-7xl mx-auto">
+        <h1 className="text-3xl font-bold mb-6 text-primary">Vencimientos y Renovaciones</h1>
+
+        {/* Tarjetas de Resumen */}
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-6">
+          <Card className="bg-white">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Membresías Activas</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{totalActive}</div>
+              <p className="text-xs text-muted-foreground">Total de membresías activas</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Vencen Hoy/Mañana</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                {expiringSoon.filter(m => m.diffDays <= 1).length}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Membresías a punto de vencer
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Vencen en 2-3 días</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                {expiringSoon.filter(m => m.diffDays > 1 && m.diffDays <= 3).length}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Membresías con pocos días restantes
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Vencidas</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{expired.length}</div>
+              <p className="text-xs text-muted-foreground">
+                Membresías que ya expiraron
+              </p>
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Resumen de vencimientos */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        {/* Tablas de Vencimientos */}
+        <div className="grid gap-6">
+          {/* Membresías por Vencer */}
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-red-600">Vencen Hoy/Mañana</CardTitle>
+            <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
+              <div>
+                <CardTitle className="text-xl font-bold">Clientes con Membresías por Vencer</CardTitle>
+                <CardDescription>
+                  {expiringSoon.length} membresías activas a punto de vencer.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Mostrar</span>
+                <Select onValueChange={setPageSizeExpiring} defaultValue={pageSizeExpiring}>
+                  <SelectTrigger className="w-[80px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5">5</SelectItem>
+                    <SelectItem value="10">10</SelectItem>
+                    <SelectItem value="20">20</SelectItem>
+                    <SelectItem value="all">Todos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">
-                {proximosVencimientos.filter(m => m.diasRestantes <= 1).length}
-              </div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-orange-600">Vencen en 2-3 días</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {proximosVencimientos.filter(m => m.diasRestantes >= 2 && m.diasRestantes <= 3).length}
-              </div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-yellow-600">Vencen en 4-7 días</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {proximosVencimientos.filter(m => m.diasRestantes >= 4 && m.diasRestantes <= 7).length}
-              </div>
+              <ScrollArea className="h-[400px]">
+                <Table className="min-w-full">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-1/4">Cliente</TableHead>
+                      <TableHead className="w-1/4">Membresía</TableHead>
+                      <TableHead className="w-1/4">Vencimiento</TableHead>
+                      <TableHead className="w-1/4">Acciones</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {expiringSoon.slice(0, pageSizeExpiring === 'all' ? expiringSoon.length : parseInt(pageSizeExpiring)).map((membership) => (
+                      <TableRow key={membership.id}>
+                        <TableCell className="w-1/4">
+                          {membership.client.first_name} {membership.client.last_name}
+                        </TableCell>
+                        <TableCell className="w-1/4">
+                          {membership.membership_plans?.name || 'N/A'}
+                        </TableCell>
+                        <TableCell className="w-1/4">
+                          <div className="flex items-center space-x-2">
+                            <Badge variant={getBadgeVariant(membership.diffDays)}>
+                              {getBadgeText(membership.diffDays)}
+                            </Badge>
+                          </div>
+                        </TableCell>
+                        <TableCell className="w-1/4">
+                          <Button size="sm" className="bg-green-500 hover:bg-green-600 text-white" onClick={() => handleRenewMembership(membership)}>
+                            Renovar
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
             </CardContent>
           </Card>
 
+          {/* Membresías Vencidas */}
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Total</CardTitle>
+            <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
+              <div>
+                <CardTitle className="text-xl font-bold">Clientes con Membresías Vencidas</CardTitle>
+                <CardDescription>
+                  {expired.length} membresías que ya expiraron.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Mostrar</span>
+                <Select onValueChange={setPageSizeExpired} defaultValue={pageSizeExpired}>
+                  <SelectTrigger className="w-[80px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5">5</SelectItem>
+                    <SelectItem value="10">10</SelectItem>
+                    <SelectItem value="20">20</SelectItem>
+                    <SelectItem value="all">Todos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{proximosVencimientos.length}</div>
+              <ScrollArea className="h-[400px]">
+                <Table className="min-w-full">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-1/4">Cliente</TableHead>
+                      <TableHead className="w-1/4">Membresía</TableHead>
+                      <TableHead className="w-1/4">Vencimiento</TableHead>
+                      <TableHead className="w-1/4">Acciones</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {expired.slice(0, pageSizeExpired === 'all' ? expired.length : parseInt(pageSizeExpired)).map((membership) => (
+                      <TableRow key={membership.id}>
+                        <TableCell className="w-1/4">
+                          {membership.client.first_name} {membership.client.last_name}
+                        </TableCell>
+                        <TableCell className="w-1/4">
+                          {membership.membership_plans?.name || 'N/A'}
+                        </TableCell>
+                        <TableCell className="w-1/4">
+                          <div className="flex items-center space-x-2">
+                            <Badge variant="destructive">
+                              {getExpiredBadgeText(membership.diffDays)}
+                            </Badge>
+                          </div>
+                        </TableCell>
+                        <TableCell className="w-1/4">
+                          <Button size="sm" className="bg-green-500 hover:bg-green-600 text-white" onClick={() => handleRenewMembership(membership)}>
+                            Renovar
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
             </CardContent>
           </Card>
         </div>
-
-        {/* Lista de clientes próximos a vencer */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Clientes con Membresías por Vencer</CardTitle>
-            <CardDescription>Lista ordenada por urgencia de vencimiento</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {proximosVencimientos
-                .sort((a, b) => a.diasRestantes - b.diasRestantes)
-                .map((item) => (
-                <div key={item.id} className="border rounded-lg p-6">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-3">
-                        <h3 className="text-lg font-semibold">
-                          {item.cliente.first_name} {item.cliente.last_name}
-                        </h3>
-                        <Badge className={`${getUrgencyColor(item.diasRestantes)} flex items-center gap-1`}>
-                          {getUrgencyIcon(item.diasRestantes)}
-                          {item.diasRestantes === 0 ? 'Vence hoy' : 
-                           item.diasRestantes === 1 ? 'Vence mañana' : 
-                           `${item.diasRestantes} días restantes`}
-                        </Badge>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
-                        <div>
-                          <p className="text-muted-foreground">Cédula:</p>
-                          <p className="font-medium">{item.cliente.national_id}</p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Teléfono:</p>
-                          <p className="font-medium">{item.cliente.phone}</p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Membresía:</p>
-                          <p className="font-medium">{item.membresia.plan_name}</p>
-                        </div>
-                         <div>
-                           <p className="text-muted-foreground">Vence:</p>
-                           <p className="font-medium">{new Date(item.membresia.end_date).toLocaleDateString()}</p>
-                         </div>
-                       </div>
-                     </div>
-                     
-                     <div className="flex gap-2 ml-4">
-                       <Button size="sm" variant="outline" className="flex items-center gap-1">
-                         <Phone className="h-4 w-4" />
-                         Llamar
-                       </Button>
-                       <Button size="sm" variant="outline" className="flex items-center gap-1">
-                         <Mail className="h-4 w-4" />
-                         Email
-                       </Button>
-                       <Button size="sm" className="bg-green-600 hover:bg-green-700">
-                         Renovar
-                       </Button>
-                     </div>
-                   </div>
-                 </div>
-               ))}
-             </div>
-
-            {proximosVencimientos.length === 0 && (
-              <div className="text-center py-12">
-                <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">No hay vencimientos próximos</h3>
-                <p className="text-muted-foreground">Todas las membresías están al día</p>
+        
+        {/* Diálogo de Renovación */}
+        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Renovar Membresía</DialogTitle>
+              <DialogDescription>
+                Selecciona el nuevo plan de membresía y el método de pago para {selectedMembership?.client.first_name} {selectedMembership?.client.last_name}.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="new-plan" className="text-right">
+                  Plan
+                </Label>
+                <Select value={newPlan} onValueChange={setNewPlan}>
+                  <SelectTrigger id="new-plan" className="col-span-3">
+                    <SelectValue placeholder="Seleccionar plan" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {membershipPlans.map(plan => (
+                      <SelectItem key={plan.id} value={plan.id}>
+                        {plan.name} - ₡{plan.price}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-            )}
-           </CardContent>
-         </Card>
-       </div>
-       </div>
-     </div>
-   );
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="new-payment" className="text-right">
+                  Método de Pago
+                </Label>
+                <Select value={newPaymentMethod} onValueChange={setNewPaymentMethod}>
+                  <SelectTrigger id="new-payment" className="col-span-3">
+                    <SelectValue placeholder="Seleccionar método" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Efectivo</SelectItem>
+                    <SelectItem value="card">Tarjeta</SelectItem>
+                    <SelectItem value="transfer">Transferencia</SelectItem>
+                    <SelectItem value="sinpe">SINPE Móvil</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setIsDialogOpen(false)} variant="outline">Cancelar</Button>
+              <Button onClick={handleConfirmRenewal} className="bg-green-500 hover:bg-green-600">Confirmar Renovación</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+      </div>
+    </div>
+  );
 };
 
 export default Vencimientos;

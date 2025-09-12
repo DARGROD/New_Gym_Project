@@ -1,190 +1,258 @@
 import { useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { useToast } from "@/hooks/use-toast";
-import { CalendarDays, TrendingUp, DollarSign } from "lucide-react";
-import TopNavigation from "@/components/TopNavigation";
+import { supabase } from "../integrations/supabase/client";
+import { useToast } from "../hooks/use-toast";
+import TopNavigation from "../components/TopNavigation";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Label } from "../components/ui/label";
+import { Input } from "../components/ui/input";
+import { Button } from "../components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { format, parseISO } from "date-fns";
+import { es } from "date-fns/locale";
+
+type PaymentBreakdown = {
+  cash: number;
+  card: number;
+  transfer: number;
+  sinpe: number;
+};
 
 const Reportes = () => {
-  const [fechaInicio, setFechaInicio] = useState("");
-  const [fechaFin, setFechaFin] = useState("");
-  const [reporteGenerado, setReporteGenerado] = useState(false);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [reportData, setReportData] = useState<any[]>([]);
+  const [totalRevenue, setTotalRevenue] = useState(0);
+  const [paymentBreakdown, setPaymentBreakdown] = useState<PaymentBreakdown>({
+    cash: 0,
+    card: 0,
+    transfer: 0,
+    sinpe: 0,
+  });
   const { toast } = useToast();
 
-  const generarReporte = () => {
-    if (!fechaInicio || !fechaFin) {
+  const handleGenerateReport = async () => {
+    if (!startDate || !endDate) {
       toast({
         title: "Error",
-        description: "Por favor seleccione las fechas de inicio y fin",
-        variant: "destructive"
+        description: "Por favor, selecciona una fecha de inicio y una de fin.",
+        variant: "destructive",
       });
       return;
     }
 
-    setReporteGenerado(true);
-    toast({
-      title: "Reporte generado",
-      description: "El reporte de ingresos ha sido generado exitosamente"
-    });
+    if (parseISO(startDate) > parseISO(endDate)) {
+      toast({
+        title: "Error de Fechas",
+        description: "La fecha de inicio no puede ser posterior a la fecha de fin.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const { data: memberships, error } = await supabase
+        .from("memberships")
+        .select(`
+          created_at,
+          payments,
+          membership_plans (
+            name,
+            price
+          ),
+          clients (
+            first_name,
+            last_name
+          )
+        `)
+        .gte("created_at", `${startDate}T00:00:00.000Z`)
+        .lte("created_at", `${endDate}T23:59:59.999Z`);
+
+      if (error) throw error;
+
+      if (!memberships || memberships.length === 0) {
+        setReportData([]);
+        setTotalRevenue(0);
+        setPaymentBreakdown({ cash: 0, card: 0, transfer: 0, sinpe: 0 });
+        toast({
+          title: "Sin resultados",
+          description: "No se encontraron pagos en el rango de fechas seleccionado.",
+        });
+        return;
+      }
+
+      let total = 0;
+      const breakdown: PaymentBreakdown = { cash: 0, card: 0, transfer: 0, sinpe: 0 };
+
+      const formattedData = memberships.map((item: any) => {
+        const price = item.membership_plans?.price || 0;
+        const paymentType = item.payments || "N/A";
+        total += price;
+        if (paymentType in breakdown) {
+          breakdown[paymentType as keyof PaymentBreakdown] += price;
+        }
+        return {
+          date: format(parseISO(item.created_at), "PPP", { locale: es }),
+          clientName: `${item.clients.first_name} ${item.clients.last_name}`,
+          membershipPlan: item.membership_plans?.name,
+          price,
+          payment: paymentType,
+        };
+      });
+
+      setReportData(formattedData);
+      setTotalRevenue(total);
+      setPaymentBreakdown(breakdown);
+
+      toast({
+        title: "Reporte Generado",
+        description: "El reporte de ingresos se ha generado exitosamente.",
+        className: "bg-green-500 text-white",
+        duration: 3000,
+      });
+    } catch (error) {
+      console.error("Error al generar reporte:", error);
+      toast({
+        title: "Error al generar reporte",
+        description: "Hubo un problema al cargar los datos.",
+        variant: "destructive",
+      });
+    }
   };
 
-  // Datos de muestra para el reporte
-  const reporteIngresos = [
-    {
-      fecha: "8/22/2025",
-      cliente: "Jonathan Jones",
-      membresia: "Mensual",
-      metodo: "Tarjeta",
-      monto: 20000
-    },
-    {
-      fecha: "8/22/2025",
-      cliente: "Diego Rodríguez",
-      membresia: "Mensual",
-      metodo: "Efectivo",
-      monto: 20000
-    },
-    {
-      fecha: "8/22/2025",
-      cliente: "Roberto Carranza",
-      membresia: "Familiar",
-      metodo: "Sinpe",
-      monto: 19000
-    }
-  ];
+  const handleExportCSV = () => {
+    const headers = ["Fecha", "Cliente", "Membresia", "Metodo de Pago", "Monto"];
+    const csvContent = [
+      headers.join(","),
+      ...reportData.map(item =>
+        `${item.date},"${item.clientName}",${item.membershipPlan},${item.payment},${item.price}`
+      ),
+    ].join("\n");
 
-  const totalIngresos = reporteIngresos.reduce((sum, item) => sum + item.monto, 0);
-  const ingresosTarjeta = reporteIngresos.filter(r => r.metodo === "Tarjeta").reduce((sum, item) => sum + item.monto, 0);
-  const ingresosEfectivo = reporteIngresos.filter(r => r.metodo === "Efectivo").reduce((sum, item) => sum + item.monto, 0);
-  const ingresosSinpe = reporteIngresos.filter(r => r.metodo === "Sinpe").reduce((sum, item) => sum + item.monto, 0);
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `reporte_ingresos_${startDate}_${endDate}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const getPaymentBadgeColor = (method: string) => {
+    switch (method) {
+      case 'Efectivo':
+      case 'cash':
+        return 'bg-green-100 text-green-800';
+      case 'Tarjeta':
+      case 'card':
+        return 'bg-blue-100 text-blue-800';
+      case 'Transferencia':
+      case 'transfer':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'SINPE Móvil':
+      case 'sinpe':
+        return 'bg-purple-100 text-purple-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const formatNumberWithCommas = (number: number) => {
+    return number.toLocaleString('es-CR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
 
   return (
     <div className="min-h-screen bg-background">
       <TopNavigation />
-      <div className="p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-primary mb-2">Reporte de Ingresos</h1>
-          <p className="text-muted-foreground">Generar reportes económicos por rango de fechas</p>
-        </div>
+      <div className="p-6 max-w-7xl mx-auto">
+        <h1 className="text-3xl font-bold mb-6 text-primary">Reporte de Ingresos</h1>
 
-        {/* Formulario de generación de reporte */}
-        <Card className="mb-8">
+        {/* Selector de Fechas */}
+        <Card className="mb-6 bg-white">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <CalendarDays className="h-5 w-5" />
-              Generar Reporte
-            </CardTitle>
-            <CardDescription>Seleccione el rango de fechas para el reporte</CardDescription>
+            <CardTitle>Generar Reporte por Fecha</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex gap-4 items-end">
+            <div className="flex flex-col md:flex-row items-center gap-4">
               <div className="flex-1">
-                <Label htmlFor="fecha-inicio">Fecha de Inicio</Label>
-                <Input
-                  id="fecha-inicio"
-                  type="date"
-                  value={fechaInicio}
-                  onChange={(e) => setFechaInicio(e.target.value)}
-                />
+                <Label htmlFor="start-date">Fecha de Inicio</Label>
+                <Input id="start-date" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
               </div>
               <div className="flex-1">
-                <Label htmlFor="fecha-fin">Fecha de Fin</Label>
-                <Input
-                  id="fecha-fin"
-                  type="date"
-                  value={fechaFin}
-                  onChange={(e) => setFechaFin(e.target.value)}
-                />
+                <Label htmlFor="end-date">Fecha de Fin</Label>
+                <Input id="end-date" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
               </div>
-              <Button onClick={generarReporte} className="bg-blue-600 hover:bg-blue-700">
-                Generar
+              <Button onClick={handleGenerateReport} className="mt-6 md:mt-4 bg-primary text-primary-foreground">
+                Generar Reporte
               </Button>
             </div>
           </CardContent>
         </Card>
 
         {/* Resultados del reporte */}
-        {reporteGenerado && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5" />
-                Resultados del Reporte
-              </CardTitle>
-              <CardDescription>
-                <div className="flex items-center gap-4 mt-2">
-                  <span className="text-2xl font-bold text-primary">
-                    **Total de Ingresos:** ₡{totalIngresos.toLocaleString()}
-                  </span>
-                  <div className="flex gap-4 text-sm">
-                    <span>**Tarjeta:** ₡{ingresosTarjeta.toLocaleString()}</span>
-                    <span>**Efectivo:** ₡{ingresosEfectivo.toLocaleString()}</span>
-                    <span>**Sinpe:** ₡{ingresosSinpe.toLocaleString()}</span>
-                  </div>
-                </div>
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b bg-muted/50">
-                      <th className="text-left p-4 font-semibold">FECHA</th>
-                      <th className="text-left p-4 font-semibold">CLIENTE</th>
-                      <th className="text-left p-4 font-semibold">MEMBRESÍA</th>
-                      <th className="text-left p-4 font-semibold">MÉTODO DE PAGO</th>
-                      <th className="text-right p-4 font-semibold">MONTO</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reporteIngresos.map((item, index) => (
-                      <tr key={index} className="border-b hover:bg-muted/25">
-                        <td className="p-4">{item.fecha}</td>
-                        <td className="p-4 font-medium">{item.cliente}</td>
-                        <td className="p-4">{item.membresia}</td>
-                        <td className="p-4">
-                          <span className={`inline-block px-2 py-1 rounded text-xs ${
-                            item.metodo === 'Efectivo' ? 'bg-green-100 text-green-800' :
-                            item.metodo === 'Tarjeta' ? 'bg-blue-100 text-blue-800' :
-                            'bg-purple-100 text-purple-800'
-                          }`}>
-                            {item.metodo}
-                          </span>
-                        </td>
-                        <td className="p-4 text-right font-semibold">₡{item.monto.toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+        {reportData.length > 0 && (
+          <>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 mb-6">
+              <Card>
+                <CardHeader><CardTitle>Ingresos Totales</CardTitle></CardHeader>
+                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(totalRevenue)}</div></CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle>Efectivo</CardTitle></CardHeader>
+                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.cash)}</div></CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle>Tarjeta</CardTitle></CardHeader>
+                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.card)}</div></CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle>Transferencias</CardTitle></CardHeader>
+                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.transfer)}</div></CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle>SINPE Móvil</CardTitle></CardHeader>
+                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.sinpe)}</div></CardContent>
+              </Card>
+            </div>
 
-              <div className="mt-6 p-4 bg-muted/30 rounded-lg">
-                <h3 className="font-semibold mb-3 flex items-center gap-2">
-                  <DollarSign className="h-4 w-4" />
-                  Resumen por Método de Pago
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="text-center p-3 bg-green-50 rounded border">
-                    <p className="text-sm text-muted-foreground">Efectivo</p>
-                    <p className="text-lg font-bold text-green-700">₡{ingresosEfectivo.toLocaleString()}</p>
-                  </div>
-                  <div className="text-center p-3 bg-blue-50 rounded border">
-                    <p className="text-sm text-muted-foreground">Tarjeta</p>
-                    <p className="text-lg font-bold text-blue-700">₡{ingresosTarjeta.toLocaleString()}</p>
-                  </div>
-                  <div className="text-center p-3 bg-purple-50 rounded border">
-                    <p className="text-sm text-muted-foreground">Sinpe</p>
-                    <p className="text-lg font-bold text-purple-700">₡{ingresosSinpe.toLocaleString()}</p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+            {/* Tabla */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle>Detalle de Ingresos</CardTitle>
+                <Button onClick={handleExportCSV} className="bg-green-500 text-white">Exportar a CSV</Button>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Fecha</TableHead>
+                      <TableHead>Cliente</TableHead>
+                      <TableHead>Membresía</TableHead>
+                      <TableHead>Método de Pago</TableHead>
+                      <TableHead className="text-right">Monto</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {reportData.map((item, index) => (
+                      <TableRow key={index}>
+                        <TableCell className="w-1/6">{item.date}</TableCell>
+                        <TableCell className="w-1/5 font-medium">{item.clientName}</TableCell>
+                        <TableCell className="w-1/6">{item.membershipPlan}</TableCell>
+                        <TableCell className="w-1/6">
+                          <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${getPaymentBadgeColor(item.payment)}`}>
+                            {item.payment}
+                          </span>
+                        </TableCell>
+                        <TableCell className="w-1/5 text-right font-semibold">₡{formatNumberWithCommas(item.price)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </>
         )}
-        </div>
       </div>
     </div>
   );
