@@ -41,11 +41,14 @@ const Asistencia = () => {
   const [userMessage, setUserMessage] = useState<UserMessage | null>(null);
   const { toast } = useToast();
 
+//aqui empiezan cambios
+
   const checkMembershipStatus = async (nationalId: string) => {
     setLoading(true);
     setUserMessage(null);
 
     try {
+      // Obtener cliente
       const { data: clientData, error: clientError } = await supabase
         .from("clients")
         .select("id, first_name, last_name")
@@ -56,25 +59,25 @@ const Asistencia = () => {
         setUserMessage({
           type: "error",
           title: "Cliente no encontrado",
-          description:
-            "No se encontró un cliente con la cédula proporcionada.",
+          description: "No se encontró un cliente con la cédula proporcionada.",
         });
         setLoading(false);
         return;
       }
 
+      // Obtener la membresía más reciente
       const { data: membershipData, error: membershipError } = await supabase
         .from("memberships")
-        .select(
-          `
-          end_date,
-          status,
-          membership_plans (
-            name,
-            duration_days
-          )
-        `
+        .select(`
+        id,
+        start_date,
+        end_date,
+        status,
+        membership_plans (
+          name,
+          duration_days
         )
+      `)
         .eq("member_id", clientData.id)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -92,35 +95,54 @@ const Asistencia = () => {
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      const endDate = parseISO(membershipData.end_date);
+
+      const startDate = new Date(membershipData.start_date);
+      startDate.setHours(0, 0, 0, 0);
+
+      const endDate = new Date(membershipData.end_date);
       endDate.setHours(0, 0, 0, 0);
-      const diffDays = differenceInCalendarDays(endDate, today);
+
+      const planName = membershipData.membership_plans?.name.toLowerCase() || "";
+      const isSession = planName.includes("sesion");
+
+      let diffDays: number;
+      let displayEndDate = endDate;
+
+      if (isSession) {
+        // Para sesiones, la membresía vence mañana después de start_date
+        const sessionEnd = new Date(startDate);
+        sessionEnd.setDate(sessionEnd.getDate() + 1);
+        diffDays = differenceInCalendarDays(sessionEnd, today);
+        displayEndDate = sessionEnd;
+      } else {
+        // Restamos 1 día para considerar que al llegar a la fecha real ya está vencida
+        diffDays = differenceInCalendarDays(endDate, today) - 1;
+      }
+
+      const clientFullName = `${clientData.first_name} ${clientData.last_name}`;
+      const formattedEndDate = displayEndDate.toLocaleDateString("es-CR");
 
       let message: UserMessage;
       let canRegister = false;
-
-      const clientFullName = `${clientData.first_name} ${clientData.last_name}`;
-      const formattedEndDate = new Date(
-        membershipData.end_date
-      ).toLocaleDateString("es-CR");
 
       if (diffDays < 0) {
         message = {
           type: "error",
           title: `¡Hola ${clientFullName}!`,
-          description: `Tu membresía ha expirado desde el ${formattedEndDate}. Por favor, renueva para poder acceder.`,
+          description: `Tu membresía ha vencido (${formattedEndDate}). Por favor, renueva para poder acceder.`,
         };
       } else if (diffDays === 0) {
         message = {
-          type: "error",
+          type: "warning",
           title: `¡Hola ${clientFullName}!`,
-          description: `Tu membresía vence hoy. Por favor, renueva para poder acceder.`,
+          description: `¡Atención! Tu membresía vence mañana (${formattedEndDate}).`,
         };
+        canRegister = true;
       } else if (diffDays > 0 && diffDays <= 3) {
         message = {
           type: "warning",
-          title: `¡Bienvenido ${clientFullName}!`,
-          description: `Tu membresía vence en ${diffDays} día(s). Se vence el ${formattedEndDate}.`,
+          title: `¡Hola ${clientFullName}!`,
+          description: `Tu membresía vence en ${diffDays} día(s) (${formattedEndDate}).`,
         };
         canRegister = true;
       } else {
@@ -160,14 +182,17 @@ const Asistencia = () => {
       setUserMessage({
         type: "error",
         title: "Error del Sistema",
-        description:
-          "No se pudo verificar el estado de la membresía. Intenta de nuevo.",
+        description: "No se pudo verificar el estado de la membresía. Intenta de nuevo.",
       });
     } finally {
       setLoading(false);
     }
   };
 
+
+
+
+// aqui terminan cambios
   const handleRegisterAttendance = (e: React.FormEvent) => {
     e.preventDefault();
     if (!nationalId) {

@@ -244,11 +244,13 @@ const Clientes = () => {
   };
   
   // Función de búsqueda optimizada
+  //cambio desde aqui
+
   const buscarCliente = async () => {
     if (!searchTerm.trim()) {
       toast({
         title: "Error",
-        description: "Por favor ingrese un nombre, apellido o cédula para buscar",
+        description: "Por favor ingrese un nombre o apellido para buscar",
         variant: "destructive"
       });
       return;
@@ -256,56 +258,79 @@ const Clientes = () => {
 
     setIsSearching(true);
     try {
-      const { data, error } = await supabase
-        .from('clients')
+      let query = supabase
+        .from("clients")
         .select(`
-          *,
-          memberships (
-            id,
-            status,
-            start_date,
-            end_date,
-            payments,
-            created_at,
-            membership_plans (
-              name,
-              price
-            )
+        *,
+        memberships (
+          id,
+          status,
+          start_date,
+          end_date,
+          payments,
+          created_at,
+          membership_plans (
+            name,
+            price
           )
-        `)
-        .or(`national_id.ilike.%${searchTerm}%,first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%`);
-      
+        )
+      `);
+
+      // 🔹 Dividir el término de búsqueda en palabras individuales
+      const searchTokens = searchTerm.trim().split(/\s+/);
+
+      // 🔹 Generar condiciones OR para cada token en first_name y last_name
+      const orFilters = searchTokens
+        .map(
+          (token) =>
+            `first_name.ilike.%${token}%,last_name.ilike.%${token}%`
+        )
+        .join(",");
+
+      // 🔹 Aplicar OR en la query
+      query = query.or(orFilters);
+
+      const { data, error } = await query;
+
       if (error || !data || data.length === 0) {
         toast({
           title: "Cliente no encontrado",
           description: "No se encontró un cliente con esa búsqueda",
-          variant: "destructive"
+          variant: "destructive",
         });
         setSearchResults([]);
         return;
       }
 
-      const clientsWithLatestMembership = data.map(client => {
-          const sortedMemberships = client.memberships?.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-          const latestMembership = sortedMemberships?.[0] || null;
-          return {
-              ...client,
-              latestMembership
-          };
+      // 🔹 Ordenar membresías y asignar la última
+      const clientsWithLatestMembership = data.map((client) => {
+        const sortedMemberships = client.memberships?.sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() -
+            new Date(a.created_at).getTime()
+        );
+        const latestMembership = sortedMemberships?.[0] || null;
+        return {
+          ...client,
+          latestMembership,
+        };
       });
 
       setSearchResults(clientsWithLatestMembership);
-
     } catch (error) {
       toast({
         title: "Error",
         description: "Error al buscar el cliente",
-        variant: "destructive"
+        variant: "destructive",
       });
     } finally {
       setIsSearching(false);
     }
   };
+
+
+
+  //aqui termina 
 
   const validarMembresia = (client: any) => {
     const latestMembership = client.latestMembership;
@@ -347,6 +372,14 @@ const Clientes = () => {
         <div>
           <p className="text-muted-foreground">Email:</p>
           <p>{client.email || 'No registrado'}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Contacto de Emergencia:</p>
+          <p>{client.emergency_contact || 'No registrado'}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Telefono de Emergencia:</p>
+          <p>{client.emergency_phone || 'No registrado'}</p>
         </div>
       </div>
 
@@ -423,6 +456,8 @@ const Clientes = () => {
                           <p className="text-sm text-muted-foreground">Cédula: {cliente.national_id}</p>
                           <p className="text-sm">Teléfono: {cliente.phone || 'No registrado'}</p>
                           <p className="text-sm">Email: {cliente.email || 'No registrado'}</p>
+                          <p className="text-sm">Contacto de emergencia: {cliente.emergency_contact || 'No registrado'}</p>
+                          <p className="text-sm">Telefono de Emergencia: {cliente.emergency_phone || 'No registrado'}</p>
                           {cliente.latestMembership && (
                             <div className="mt-2">
                               <span className="inline-block bg-green-100 text-green-800 text-xs px-2 py-1 rounded mr-2">
@@ -494,6 +529,8 @@ const Clientes = () => {
                           <p className="text-sm text-muted-foreground">Cédula: {cliente.national_id}</p>
                           <p className="text-sm">Teléfono: {cliente.phone || 'No registrado'}</p>
                           <p className="text-sm">Email: {cliente.email || 'No registrado'}</p>
+                          <p className="text-sm">Contacto de emergencia: {cliente.emergency_contact || 'No registrado'}</p>
+                          <p className="text-sm">Telefono de Emergencia: {cliente.emergency_phone || 'No registrado'}</p>
                           <div className="mt-2">
                             <span className="inline-block bg-red-100 text-red-800 text-xs px-2 py-1 rounded">
                               Sin membresía activa
@@ -769,6 +806,8 @@ const Clientes = () => {
                               <p className="text-sm text-muted-foreground">Cédula: {cliente.national_id}</p>
                               <p className="text-sm">Teléfono: {cliente.phone || 'No registrado'}</p>
                               <p className="text-sm">Email: {cliente.email || 'No registrado'}</p>
+                              <p className="text-sm">Contacto de emergencia: {cliente.emergency_contact || 'No registrado'}</p>
+                              <p className="text-sm">Telefono de Emergencia: {cliente.emergency_phone || 'No registrado'}</p>
                               {cliente.latestMembership && (
                                 <div className="mt-2">
                                   <span className="inline-block bg-green-100 text-green-800 text-xs px-2 py-1 rounded mr-2">
@@ -840,6 +879,8 @@ const Clientes = () => {
                               <p className="text-sm text-muted-foreground">Cédula: {cliente.national_id}</p>
                               <p className="text-sm">Teléfono: {cliente.phone || 'No registrado'}</p>
                               <p className="text-sm">Email: {cliente.email || 'No registrado'}</p>
+                              <p className="text-sm">Contacto de emergencia: {cliente.emergency_contact || 'No registrado'}</p>
+                              <p className="text-sm">Telefono de Emergencia: {cliente.emergency_phone || 'No registrado'}</p>
                               <div className="mt-2">
                                 <span className="inline-block bg-red-100 text-red-800 text-xs px-2 py-1 rounded">
                                   Sin membresía activa
