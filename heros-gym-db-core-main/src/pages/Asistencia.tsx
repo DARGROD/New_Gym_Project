@@ -212,7 +212,7 @@ const Asistencia = () => {
       } else {
         message = {
           type: "success",
-          title: `¡Bienvenido ${clientFullName}!`,
+          title: `¡Bienvenid@ ${clientFullName}!`,
           description: `Tu membresía está activa. Vence el ${formattedEndDate}.`,
         };
       }
