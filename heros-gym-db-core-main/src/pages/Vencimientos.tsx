@@ -4,71 +4,166 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Button } from "../components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { supabase } from "../integrations/supabase/client";
 import { useToast } from "../hooks/use-toast";
 import TopNavigation from "../components/TopNavigation";
-import { format, differenceInCalendarDays } from "date-fns";
-import { es } from "date-fns/locale";
+import { differenceInCalendarDays } from "date-fns";
 
-// Helper function to get badge variant based on days left
-const getBadgeVariant = (diffDays) => {
-  if (diffDays === undefined) return "default";
+// ========================= Helpers de fecha (LOCAL, sin TZ) =========================
 
-  if (diffDays <= 0) {
-    if (diffDays === 0) return "destructive"; // Vence hoy
-    return "outline"; // Venció hace más tiempo
-  }
-  if (diffDays === 1) return "destructive"; // Vence mañana
-  if (diffDays <= 3) return "secondary";   // 2-3 días
-  if (diffDays <= 7) return "default";     // 4-7 días
-
-  return "secondary"; // fallback
+// "YYYY-MM-DD" -> Date local (00:00 en tu zona local)
+const dateFromISODateOnlyLocal = (s?: string) => {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  return new Date(y, mo, d);
 };
 
-// Helper function to get badge text
-const getBadgeText = (diffDays) => {
+// Date local -> "YYYY-MM-DD"
+const fmtISODateOnlyLocal = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+// Trunca a 00:00 local
+const toDateOnly = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+// Vigente si hoy <= end_date (inclusive)
+const isValidByDate = (endDateStr?: string) => {
+  const end = dateFromISODateOnlyLocal(endDateStr);
+  if (!end) return false;
+  const today = toDateOnly(new Date());
+  return today.getTime() <= end.getTime();
+};
+
+// Vencida si hoy > end_date
+const isExpiredByDate = (endDateStr?: string) => {
+  const end = dateFromISODateOnlyLocal(endDateStr);
+  if (!end) return false;
+  const today = toDateOnly(new Date());
+  return today.getTime() > end.getTime();
+};
+
+// Mostrar exactamente el string de DB
+const printDBDate = (dateStr?: string) => {
+  if (!dateStr) return "N/A";
+  const [y, m, d] = dateStr.split("-");
+  return `${d}/${m}/${y}`;
+};
+
+// ========================= Helpers de plan =========================
+
+const normalize = (s: string) =>
+  (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+
+const addDays = (d: Date, n: number) => {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+};
+const addMonthsSameDay = (d: Date, n: number) => {
+  const x = new Date(d);
+  x.setMonth(x.getMonth() + n);
+  return x;
+};
+
+/**
+ * Calcula end_date según NOMBRE del plan.
+ * - Mensual/Familiar: +1 mes exacto (vence mismo día del mes siguiente, inclusive).
+ * - Quincenal: +14 días (inclusive).
+ * - Semanal: +7 días (inclusive).
+ * - Sesión: mismo día (inclusive).
+ * Fallback: duration_days si está definido, si no 30 días.
+ */
+const computeEndDateByPlanName = (start: Date, planName: string, fallbackDays?: number) => {
+  const n = normalize(planName);
+  if (n.includes("mensual") || n.includes("familiar")) return addMonthsSameDay(start, 1);
+  if (n.includes("quincenal")) return addDays(start, 14);
+  if (n.includes("semanal")) return addDays(start, 7);
+  if (n.includes("sesion") || n.includes("sesión")) return new Date(start); // mismo día
+  return fallbackDays ? addDays(start, fallbackDays) : addDays(start, 30);
+};
+
+// ========================= Badges =========================
+
+const getBadgeVariant = (diffDays?: number) => {
+  if (diffDays === undefined) return "default";
+  if (diffDays <= 0) return diffDays === 0 ? "destructive" : "outline";
+  if (diffDays === 1) return "destructive";
+  if (diffDays <= 3) return "secondary";
+  if (diffDays <= 7) return "default";
+  return "secondary";
+};
+const getBadgeText = (diffDays?: number) => {
+  if (diffDays === undefined) return "";
   if (diffDays === 0) return "Vence hoy";
   if (diffDays === 1) return "Vence mañana";
   return `Vence en ${diffDays} días`;
 };
-
-// Helper function to get expired badge text
-const getExpiredBadgeText = (diffDays) => {
+const getExpiredBadgeText = (diffDays?: number) => {
+  if (diffDays === undefined) return "Vencida";
   if (diffDays === -1) return "Venció ayer";
   if (diffDays === 0) return "Venció hoy";
   return `Venció hace ${Math.abs(diffDays)} días`;
 };
 
+// ========================= Componente =========================
 
 const Vencimientos = () => {
-  const [expiringSoon, setExpiringSoon] = useState([]);
-  const [expired, setExpired] = useState([]);
+  const [expiringSoon, setExpiringSoon] = useState<any[]>([]);
+  const [expired, setExpired] = useState<any[]>([]);
   const [totalActive, setTotalActive] = useState(0);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [selectedMembership, setSelectedMembership] = useState(null);
-  const [membershipPlans, setMembershipPlans] = useState([]);
+  const [selectedMembership, setSelectedMembership] = useState<any>(null);
+  const [membershipPlans, setMembershipPlans] = useState<any[]>([]);
   const [newPlan, setNewPlan] = useState("");
   const [newPaymentMethod, setNewPaymentMethod] = useState("cash");
   const [pageSizeExpiring, setPageSizeExpiring] = useState("5");
   const [pageSizeExpired, setPageSizeExpired] = useState("5");
   const { toast } = useToast();
 
-  const fetchMembershipPlans = async () => {
-    const { data, error } = await supabase
-      .from('membership_plans')
-      .select('*');
+  // --------- Fetch helpers ---------
 
-    if (!error) {
-      setMembershipPlans(data);
+  const fetchMembershipPlans = async () => {
+    const { data, error } = await supabase.from("membership_plans").select("*").eq("status", "active");
+    if (!error) setMembershipPlans(data || []);
+  };
+
+  // Marca como expired por fecha (await para consistencia)
+  const expireOutdatedMemberships = async (latestList: any[]) => {
+    const needExpire = latestList
+      .filter((m) => m && m.end_date && isExpiredByDate(m.end_date) && m.status !== "expired")
+      .map((m) =>
+        supabase.from("memberships").update({ status: "expired" }).eq("id", m.id)
+      );
+
+    if (needExpire.length === 0) return;
+    try {
+      await Promise.all(needExpire);
+    } catch (e) {
+      console.error("Error marcando expiradas:", e);
+      toast({
+        title: "Aviso",
+        description: "Algunas membresías no pudieron marcarse como vencidas.",
+        variant: "destructive",
+      });
     }
   };
 
   const fetchExpiringMemberships = async () => {
     const { data: clients, error } = await supabase
-      .from('clients')
+      .from("clients")
       .select(`
         id,
         first_name,
@@ -86,152 +181,132 @@ const Vencimientos = () => {
             duration_days
           )
         )
-      `);
+      `)
+      .order("created_at", { foreignTable: "memberships", ascending: false })
+      .limit(1, { foreignTable: "memberships" });
 
     if (error) {
-      console.error('Error fetching memberships:', error);
+      console.error("Error fetching memberships:", error);
       toast({
         title: "Error al cargar membresías",
         description: "No se pudieron cargar los datos de la base de datos.",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Toma la última membresía por cliente y embebe el cliente
+    const latestMemberships =
+      clients?.flatMap((client: any) => {
+        const latest = client.memberships?.[0];
+        return latest ? [{ ...latest, client }] : [];
+      }) ?? [];
 
-    const latestMemberships = clients?.flatMap(client => {
-      const sortedMemberships = client.memberships?.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      const latest = sortedMemberships?.[0] ? { ...sortedMemberships[0], client } : null;
-      return latest ? [latest] : [];
-    }) || [];
+    // Marca expiradas por fecha (await)
+    await expireOutdatedMemberships(latestMemberships);
 
-    const expiring = [];
-    const expired = [];
+    // Recalcula clasificaciones en memoria (sin re-fetch)
+    const today = toDateOnly(new Date());
+
+    const expiring: any[] = [];
+    const expiredList: any[] = [];
     let activeCount = 0;
 
-    latestMemberships.forEach(membership => {
-      const endDate = new Date(membership.end_date);
-      const diffDays = differenceInCalendarDays(endDate, today);
-      
-      const isSession = membership.membership_plans?.name.toLowerCase().includes('sesion');
+    latestMemberships.forEach((membership) => {
+      const endDate = dateFromISODateOnlyLocal(membership.end_date);
+      const diffDays = endDate ? differenceInCalendarDays(endDate, today) : undefined;
 
-      if (isSession) {
-        // Lógica específica para membresías de sesión
-        const startDate = new Date(membership.start_date);
-        startDate.setHours(0,0,0,0);
-        if (differenceInCalendarDays(today, startDate) >= 1) {
-            expired.push({ ...membership, diffDays: differenceInCalendarDays(endDate, today) });
-            if (membership.status !== 'expired') {
-                supabase
-                    .from('memberships')
-                    .update({ status: 'expired' })
-                    .eq('id', membership.id)
-                    .then(({ error }) => {
-                        if (error) console.error("Error updating membership status:", error);
-                    });
-            }
-        } else if (differenceInCalendarDays(endDate, today) >= 0) {
-            expiring.push({ ...membership, diffDays });
-        }
-      } else {
-        // Lógica general para otras membresías
-        if (diffDays < 0) {
-          expired.push({ ...membership, diffDays });
-          if (membership.status !== 'expired') {
-            supabase
-                .from('memberships')
-                .update({ status: 'expired' })
-                .eq('id', membership.id)
-                .then(({ error }) => {
-                    if (error) console.error("Error updating membership status:", error);
-                });
-          }
-        } else if (diffDays >= 0 && diffDays <= 7) {
-          expiring.push({ ...membership, diffDays });
-        }
+      const stillValid = membership.end_date ? isValidByDate(membership.end_date) : false;
+      const isExpired = membership.end_date ? isExpiredByDate(membership.end_date) : true;
+
+      // Conteo activos: status 'active' y vigente por fecha
+      if (stillValid || membership.status === "active") activeCount++;
+
+      // Por vencer: 0..7 días (inclusive)
+      if (!isExpired && diffDays !== undefined && diffDays >= 0 && diffDays <= 7) {
+        expiring.push({ ...membership, diffDays });
+        return;
       }
-      
-      if (membership.status === 'active' && endDate >= today) {
-        activeCount++;
+
+      // Vencidas
+      if (isExpired) {
+        // Si la DB aún dice 'active', reflejamos expired en UI tras el expireOutdatedMemberships
+        const status = "expired";
+        expiredList.push({ ...membership, diffDays: diffDays ?? -1, status });
       }
     });
-    
-    // Sort expiringSoon by diffDays (closest to expiring first)
-    expiring.sort((a, b) => a.diffDays - b.diffDays);
-    // Sort expired by diffDays (most recently expired first)
-    expired.sort((a, b) => b.diffDays - a.diffDays);
-    
+
+    // Sort: próximas a vencer primero
+    expiring.sort((a, b) => (a.diffDays ?? 0) - (b.diffDays ?? 0));
+    // Sort: vencidas más recientes primero (diffDays más cercano a 0)
+    expiredList.sort((a, b) => (b.diffDays ?? -999) - (a.diffDays ?? -999));
+
     setExpiringSoon(expiring);
-    setExpired(expired);
+    setExpired(expiredList);
     setTotalActive(activeCount);
   };
-  
+
   useEffect(() => {
     fetchMembershipPlans();
     fetchExpiringMemberships();
   }, []);
 
-  const handleRenewMembership = (membership) => {
+  // --------- Renovación ---------
+
+  const handleRenewMembership = (membership: any) => {
     setSelectedMembership(membership);
     setNewPlan(membership.plan_id);
-    setNewPaymentMethod(membership.payments);
+    setNewPaymentMethod(membership.payments || "cash");
     setIsDialogOpen(true);
   };
-  
+
   const handleConfirmRenewal = async () => {
     if (!selectedMembership || !newPlan || !newPaymentMethod) {
       toast({
         title: "Error",
         description: "Por favor complete todos los campos.",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
 
     try {
-      // Obtener la duración del plan seleccionado
-      const selectedPlanData = membershipPlans.find(plan => plan.id === newPlan);
-      if (!selectedPlanData) {
-        throw new Error("Plan de membresía no encontrado.");
-      }
+      const plan = membershipPlans.find((p) => p.id === newPlan);
+      if (!plan) throw new Error("Plan de membresía no encontrado.");
 
-      const today = new Date();
-      const newEndDate = new Date(today);
-      newEndDate.setDate(today.getDate() + selectedPlanData.duration_days);
+      // Fechas locales (por día)
+      const startLocal = toDateOnly(new Date());
+      const endLocal = computeEndDateByPlanName(startLocal, plan.name, plan.duration_days);
 
-      const { error } = await supabase
-        .from('memberships')
-        .insert({
-          member_id: selectedMembership.client.id,
-          plan_id: newPlan,
-          start_date: today.toISOString(),
-          end_date: newEndDate.toISOString(),
-          status: 'active',
-          payments: newPaymentMethod
-        });
+      const { error } = await supabase.from("memberships").insert({
+        member_id: selectedMembership.client.id,
+        plan_id: newPlan,
+        start_date: fmtISODateOnlyLocal(startLocal),
+        end_date: fmtISODateOnlyLocal(endLocal),
+        status: "active",
+        payments: newPaymentMethod,
+      });
 
       if (error) throw error;
-      
+
       toast({
         title: "Membresía Renovada",
-        description: `La membresía para ${selectedMembership.client.first_name} ha sido renovada exitosamente.`,
-        className: "bg-green-500 text-white",
-        duration: 3000,
+        description: `La membresía para ${selectedMembership.client.first_name} ${selectedMembership.client.last_name} ha sido renovada exitosamente.`,
       });
 
       setIsDialogOpen(false);
-      fetchExpiringMemberships();
-
-    } catch (error: any) {
+      setSelectedMembership(null);
+      await fetchExpiringMemberships();
+    } catch (e: any) {
       toast({
         title: "Error al renovar",
-        description: error.message,
-        variant: "destructive"
+        description: e?.message || "No se pudo renovar la membresía.",
+        variant: "destructive",
       });
     }
   };
+
+  // ========================= Render =========================
 
   return (
     <div className="min-h-screen bg-background">
@@ -256,11 +331,9 @@ const Vencimientos = () => {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {expiringSoon.filter(m => m.diffDays <= 1).length}
+                {expiringSoon.filter((m) => (m.diffDays ?? 99) <= 1).length}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Membresías a punto de vencer
-              </p>
+              <p className="text-xs text-muted-foreground">Membresías a punto de vencer</p>
             </CardContent>
           </Card>
           <Card>
@@ -269,11 +342,9 @@ const Vencimientos = () => {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {expiringSoon.filter(m => m.diffDays > 1 && m.diffDays <= 3).length}
+                {expiringSoon.filter((m) => (m.diffDays ?? 0) > 1 && (m.diffDays ?? 0) <= 3).length}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Membresías con pocos días restantes
-              </p>
+              <p className="text-xs text-muted-foreground">Membresías con pocos días restantes</p>
             </CardContent>
           </Card>
           <Card>
@@ -282,9 +353,7 @@ const Vencimientos = () => {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{expired.length}</div>
-              <p className="text-xs text-muted-foreground">
-                Membresías que ya expiraron
-              </p>
+              <p className="text-xs text-muted-foreground">Membresías que ya expiraron</p>
             </CardContent>
           </Card>
         </div>
@@ -296,9 +365,7 @@ const Vencimientos = () => {
             <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
               <div>
                 <CardTitle className="text-xl font-bold">Clientes con Membresías por Vencer</CardTitle>
-                <CardDescription>
-                  {expiringSoon.length} membresías activas a punto de vencer.
-                </CardDescription>
+                <CardDescription>{expiringSoon.length} membresías activas a punto de vencer.</CardDescription>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Mostrar</span>
@@ -327,28 +394,39 @@ const Vencimientos = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {expiringSoon.slice(0, pageSizeExpiring === 'all' ? expiringSoon.length : parseInt(pageSizeExpiring)).map((membership) => (
-                      <TableRow key={membership.id}>
-                        <TableCell className="w-1/4">
-                          {membership.client.first_name} {membership.client.last_name}
-                        </TableCell>
-                        <TableCell className="w-1/4">
-                          {membership.membership_plans?.name || 'N/A'}
-                        </TableCell>
-                        <TableCell className="w-1/4">
-                          <div className="flex items-center space-x-2">
-                            <Badge variant={getBadgeVariant(membership.diffDays)}>
-                              {getBadgeText(membership.diffDays)}
-                            </Badge>
-                          </div>
-                        </TableCell>
-                        <TableCell className="w-1/4">
-                          <Button size="sm" className="bg-green-500 hover:bg-green-600 text-white" onClick={() => handleRenewMembership(membership)}>
-                            Renovar
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {expiringSoon
+                      .slice(0, pageSizeExpiring === "all" ? expiringSoon.length : parseInt(pageSizeExpiring))
+                      .map((membership) => (
+                        <TableRow key={membership.id}>
+                          <TableCell className="w-1/4">
+                            {membership.client.first_name} {membership.client.last_name}
+                          </TableCell>
+                          <TableCell className="w-1/4">
+                            {membership.membership_plans?.name || "N/A"}
+                          </TableCell>
+                          <TableCell className="w-1/4">
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center space-x-2">
+                                <Badge variant={getBadgeVariant(membership.diffDays)}>
+                                  {getBadgeText(membership.diffDays)}
+                                </Badge>
+                              </div>
+                              <span className="text-xs text-muted-foreground">
+                                Vence: {printDBDate(membership.end_date)}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="w-1/4">
+                            <Button
+                              size="sm"
+                              className="bg-green-500 hover:bg-green-600 text-white"
+                              onClick={() => handleRenewMembership(membership)}
+                            >
+                              Renovar
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
                   </TableBody>
                 </Table>
               </ScrollArea>
@@ -360,9 +438,7 @@ const Vencimientos = () => {
             <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
               <div>
                 <CardTitle className="text-xl font-bold">Clientes con Membresías Vencidas</CardTitle>
-                <CardDescription>
-                  {expired.length} membresías que ya expiraron.
-                </CardDescription>
+                <CardDescription>{expired.length} membresías que ya expiraron.</CardDescription>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Mostrar</span>
@@ -391,42 +467,54 @@ const Vencimientos = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {expired.slice(0, pageSizeExpired === 'all' ? expired.length : parseInt(pageSizeExpired)).map((membership) => (
-                      <TableRow key={membership.id}>
-                        <TableCell className="w-1/4">
-                          {membership.client.first_name} {membership.client.last_name}
-                        </TableCell>
-                        <TableCell className="w-1/4">
-                          {membership.membership_plans?.name || 'N/A'}
-                        </TableCell>
-                        <TableCell className="w-1/4">
-                          <div className="flex items-center space-x-2">
-                            <Badge variant="destructive">
-                              {getExpiredBadgeText(membership.diffDays)}
-                            </Badge>
-                          </div>
-                        </TableCell>
-                        <TableCell className="w-1/4">
-                          <Button size="sm" className="bg-green-500 hover:bg-green-600 text-white" onClick={() => handleRenewMembership(membership)}>
-                            Renovar
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {expired
+                      .slice(0, pageSizeExpired === "all" ? expired.length : parseInt(pageSizeExpired))
+                      .map((membership) => (
+                        <TableRow key={membership.id}>
+                          <TableCell className="w-1/4">
+                            {membership.client.first_name} {membership.client.last_name}
+                          </TableCell>
+                          <TableCell className="w-1/4">
+                            {membership.membership_plans?.name || "N/A"}
+                          </TableCell>
+                          <TableCell className="w-1/4">
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center space-x-2">
+                                <Badge variant="destructive">
+                                  {getExpiredBadgeText(membership.diffDays)}
+                                </Badge>
+                              </div>
+                              <span className="text-xs text-muted-foreground">
+                                Venció: {printDBDate(membership.end_date)}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="w-1/4">
+                            <Button
+                              size="sm"
+                              className="bg-green-500 hover:bg-green-600 text-white"
+                              onClick={() => handleRenewMembership(membership)}
+                            >
+                              Renovar
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
                   </TableBody>
                 </Table>
               </ScrollArea>
             </CardContent>
           </Card>
         </div>
-        
+
         {/* Diálogo de Renovación */}
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Renovar Membresía</DialogTitle>
               <DialogDescription>
-                Selecciona el nuevo plan de membresía y el método de pago para {selectedMembership?.client.first_name} {selectedMembership?.client.last_name}.
+                Selecciona el nuevo plan de membresía y el método de pago para{" "}
+                {selectedMembership?.client.first_name} {selectedMembership?.client.last_name}.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
@@ -439,9 +527,9 @@ const Vencimientos = () => {
                     <SelectValue placeholder="Seleccionar plan" />
                   </SelectTrigger>
                   <SelectContent>
-                    {membershipPlans.map(plan => (
+                    {membershipPlans.map((plan) => (
                       <SelectItem key={plan.id} value={plan.id}>
-                        {plan.name} - ₡{plan.price}
+                        {plan.name} - ₡{Number(plan.price).toLocaleString("es-CR")}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -465,12 +553,15 @@ const Vencimientos = () => {
               </div>
             </div>
             <DialogFooter>
-              <Button onClick={() => setIsDialogOpen(false)} variant="outline">Cancelar</Button>
-              <Button onClick={handleConfirmRenewal} className="bg-green-500 hover:bg-green-600">Confirmar Renovación</Button>
+              <Button onClick={() => setIsDialogOpen(false)} variant="outline">
+                Cancelar
+              </Button>
+              <Button onClick={handleConfirmRenewal} className="bg-green-500 hover:bg-green-600">
+                Confirmar Renovación
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
-
       </div>
     </div>
   );

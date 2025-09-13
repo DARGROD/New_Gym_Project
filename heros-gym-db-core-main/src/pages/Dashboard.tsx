@@ -12,7 +12,7 @@ const Dashboard = () => {
       <div className="p-6">
         <div className="max-w-7xl mx-auto">
           <div className="mb-8 text-center">
-            <h1 className="text-4xl font-bold text-primary mb-2">Gym</h1>
+            <h1 className="text-4xl font-bold text-primary mb-2">Hero's Gym</h1>
             <p className="text-muted-foreground">¡Entrena como un héroe!</p>
           </div>
 

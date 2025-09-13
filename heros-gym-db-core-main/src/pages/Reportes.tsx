@@ -17,6 +17,34 @@ type PaymentBreakdown = {
   sinpe: number;
 };
 
+// ========================= Helpers de fecha (LOCAL, sin TZ) =========================
+
+// "YYYY-MM-DD" -> Date local (00:00 en tu zona local)
+const dateFromISODateOnlyLocal = (s?: string) => {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  return new Date(y, mo, d);
+};
+// Suma días a un Date (local)
+const addDays = (d: Date, n: number) => {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+};
+// Etiqueta bonita en español para método de pago
+const paymentLabel = (method?: string) => {
+  if (!method) return "N/A";
+  if (method === "cash" || method === "Efectivo") return "Efectivo";
+  if (method === "card" || method === "Tarjeta") return "Tarjeta";
+  if (method === "transfer" || method === "Transferencia") return "Transferencia";
+  if (method === "sinpe" || method === "SINPE Movil") return "SINPE Movil";
+  return method;
+};
+
 const Reportes = () => {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -40,7 +68,17 @@ const Reportes = () => {
       return;
     }
 
-    if (parseISO(startDate) > parseISO(endDate)) {
+    const startLocal = dateFromISODateOnlyLocal(startDate);
+    const endLocal = dateFromISODateOnlyLocal(endDate);
+    if (!startLocal || !endLocal) {
+      toast({
+        title: "Error de Fechas",
+        description: "Formato de fecha inválido.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (startLocal.getTime() > endLocal.getTime()) {
       toast({
         title: "Error de Fechas",
         description: "La fecha de inicio no puede ser posterior a la fecha de fin.",
@@ -48,6 +86,10 @@ const Reportes = () => {
       });
       return;
     }
+
+    // Filtro por día LOCAL: [inicio 00:00 local, fin+1 00:00 local) => a UTC
+    const startUTC = startLocal.toISOString();
+    const endExclusiveUTC = addDays(endLocal, 1).toISOString();
 
     try {
       const { data: memberships, error } = await supabase
@@ -64,8 +106,8 @@ const Reportes = () => {
             last_name
           )
         `)
-        .gte("created_at", `${startDate}T00:00:00.000Z`)
-        .lte("created_at", `${endDate}T23:59:59.999Z`);
+        .gte("created_at", startUTC)
+        .lt("created_at", endExclusiveUTC);
 
       if (error) throw error;
 
@@ -75,7 +117,7 @@ const Reportes = () => {
         setPaymentBreakdown({ cash: 0, card: 0, transfer: 0, sinpe: 0 });
         toast({
           title: "Sin resultados",
-          description: "No se encontraron pagos en el rango de fechas seleccionado.",
+          description: "No se encontraron membresías creadas en el rango seleccionado.",
         });
         return;
       }
@@ -84,18 +126,22 @@ const Reportes = () => {
       const breakdown: PaymentBreakdown = { cash: 0, card: 0, transfer: 0, sinpe: 0 };
 
       const formattedData = memberships.map((item: any) => {
-        const price = item.membership_plans?.price || 0;
-        const paymentType = item.payments || "N/A";
-        total += price;
-        if (paymentType in breakdown) {
-          breakdown[paymentType as keyof PaymentBreakdown] += price;
+        const priceNum = Number(item?.membership_plans?.price ?? 0);
+        const method = item?.payments ?? "N/A";
+        const label = paymentLabel(method);
+
+        total += priceNum;
+        if (method in breakdown) {
+          breakdown[method as keyof PaymentBreakdown] += priceNum;
         }
+
         return {
-          date: format(parseISO(item.created_at), "PPP", { locale: es }),
-          clientName: `${item.clients.first_name} ${item.clients.last_name}`,
-          membershipPlan: item.membership_plans?.name,
-          price,
-          payment: paymentType,
+          date: format(parseISO(item.created_at), "PPP", { locale: es }), // visual local
+          clientName: `${item.clients?.first_name ?? ""} ${item.clients?.last_name ?? ""}`.trim(),
+          membershipPlan: item.membership_plans?.name ?? "N/A",
+          price: priceNum,
+          payment: label, // usamos etiqueta en español
+          rawPayment: method, // guardamos el método crudo por si se requiere
         };
       });
 
@@ -106,8 +152,6 @@ const Reportes = () => {
       toast({
         title: "Reporte Generado",
         description: "El reporte de ingresos se ha generado exitosamente.",
-        className: "bg-green-500 text-white",
-        duration: 3000,
       });
     } catch (error) {
       console.error("Error al generar reporte:", error);
@@ -120,20 +164,30 @@ const Reportes = () => {
   };
 
   const handleExportCSV = () => {
-    const headers = ["Fecha", "Cliente", "Membresia", "Metodo de Pago", "Monto"];
-    const csvContent = [
-      headers.join(","),
-      ...reportData.map(item =>
-        `${item.date},"${item.clientName}",${item.membershipPlan},${item.payment},${item.price}`
-      ),
-    ].join("\n");
+    if (reportData.length === 0) return;
 
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const headers = ["Fecha", "Cliente", "Membresia", "Metodo de Pago", "Monto"];
+    const csvRows = [
+      headers.join(","),
+      ...reportData.map((item) => {
+        // Envuelve en comillas y escapa comillas internas
+        const q = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+        return [
+          q(item.date),
+          q(item.clientName),
+          q(item.membershipPlan),
+          q(item.payment),
+          item.price.toFixed(2),
+        ].join(",");
+      }),
+    ];
+
+    const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
     link.setAttribute("download", `reporte_ingresos_${startDate}_${endDate}.csv`);
-    link.style.visibility = 'hidden';
+    link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -141,25 +195,26 @@ const Reportes = () => {
 
   const getPaymentBadgeColor = (method: string) => {
     switch (method) {
-      case 'Efectivo':
-      case 'cash':
-        return 'bg-green-100 text-green-800';
-      case 'Tarjeta':
-      case 'card':
-        return 'bg-blue-100 text-blue-800';
-      case 'Transferencia':
-      case 'transfer':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'SINPE Móvil':
-      case 'sinpe':
-        return 'bg-purple-100 text-purple-800';
+      case "Efectivo":
+      case "cash":
+        return "bg-green-100 text-green-800";
+      case "Tarjeta":
+      case "card":
+        return "bg-blue-100 text-blue-800";
+      case "Transferencia":
+      case "transfer":
+        return "bg-yellow-100 text-yellow-800";
+      case "SINPE Movil":
+      case "sinpe":
+        return "bg-purple-100 text-purple-800";
       default:
-        return 'bg-gray-100 text-gray-800';
+        return "bg-gray-100 text-gray-800";
     }
   };
 
   const formatNumberWithCommas = (number: number) => {
-    return number.toLocaleString('es-CR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return number.toLocaleString("es-CR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    // Nota: si quieres mostrar colones sin decimales, ajusta las fracciones.
   };
 
   return (
@@ -195,24 +250,44 @@ const Reportes = () => {
           <>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 mb-6">
               <Card>
-                <CardHeader><CardTitle>Ingresos Totales</CardTitle></CardHeader>
-                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(totalRevenue)}</div></CardContent>
+                <CardHeader>
+                  <CardTitle>Ingresos Totales</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">₡{formatNumberWithCommas(totalRevenue)}</div>
+                </CardContent>
               </Card>
               <Card>
-                <CardHeader><CardTitle>Efectivo</CardTitle></CardHeader>
-                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.cash)}</div></CardContent>
+                <CardHeader>
+                  <CardTitle>Efectivo</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.cash)}</div>
+                </CardContent>
               </Card>
               <Card>
-                <CardHeader><CardTitle>Tarjeta</CardTitle></CardHeader>
-                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.card)}</div></CardContent>
+                <CardHeader>
+                  <CardTitle>Tarjeta</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.card)}</div>
+                </CardContent>
               </Card>
               <Card>
-                <CardHeader><CardTitle>Transferencias</CardTitle></CardHeader>
-                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.transfer)}</div></CardContent>
+                <CardHeader>
+                  <CardTitle>Transferencias</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.transfer)}</div>
+                </CardContent>
               </Card>
               <Card>
-                <CardHeader><CardTitle>SINPE Móvil</CardTitle></CardHeader>
-                <CardContent><div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.sinpe)}</div></CardContent>
+                <CardHeader>
+                  <CardTitle>SINPE Movil</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">₡{formatNumberWithCommas(paymentBreakdown.sinpe)}</div>
+                </CardContent>
               </Card>
             </div>
 
@@ -220,7 +295,9 @@ const Reportes = () => {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle>Detalle de Ingresos</CardTitle>
-                <Button onClick={handleExportCSV} className="bg-green-500 text-white">Exportar a CSV</Button>
+                <Button onClick={handleExportCSV} className="bg-green-500 text-white">
+                  Exportar a CSV
+                </Button>
               </CardHeader>
               <CardContent>
                 <Table>
@@ -228,8 +305,8 @@ const Reportes = () => {
                     <TableRow>
                       <TableHead>Fecha</TableHead>
                       <TableHead>Cliente</TableHead>
-                      <TableHead>Membresía</TableHead>
-                      <TableHead>Método de Pago</TableHead>
+                      <TableHead>Membresia</TableHead>
+                      <TableHead>Metodo de Pago</TableHead>
                       <TableHead className="text-right">Monto</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -240,11 +317,17 @@ const Reportes = () => {
                         <TableCell className="w-1/5 font-medium">{item.clientName}</TableCell>
                         <TableCell className="w-1/6">{item.membershipPlan}</TableCell>
                         <TableCell className="w-1/6">
-                          <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${getPaymentBadgeColor(item.payment)}`}>
+                          <span
+                            className={`inline-block px-2 py-1 rounded text-xs font-semibold ${getPaymentBadgeColor(
+                              item.payment
+                            )}`}
+                          >
                             {item.payment}
                           </span>
                         </TableCell>
-                        <TableCell className="w-1/5 text-right font-semibold">₡{formatNumberWithCommas(item.price)}</TableCell>
+                        <TableCell className="w-1/5 text-right font-semibold">
+                          ₡{formatNumberWithCommas(item.price)}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
