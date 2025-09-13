@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { supabase } from "../integrations/supabase/client";
 import { useToast } from "../hooks/use-toast";
 import {
@@ -52,7 +52,7 @@ const isExpiredByDate = (endDateStr?: string) => {
   return today.getTime() > end.getTime();
 };
 
-// Mostrar exactamente el string de DB
+// Mostrar exactamente el string de DB (DD/MM/YYYY)
 const printDBDate = (dateStr?: string) => {
   if (!dateStr) return "N/A";
   const [y, m, d] = dateStr.split("-");
@@ -91,6 +91,9 @@ const Asistencia = () => {
   const [loading, setLoading] = useState(false);
   const [userMessage, setUserMessage] = useState<UserMessage | null>(null);
   const { toast } = useToast();
+
+  // Ref para limpiar y reenfocar el input
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // ========================= Lógica de verificación =========================
 
@@ -252,6 +255,8 @@ const Asistencia = () => {
       });
     } finally {
       setLoading(false);
+      setNationalId("");          // Limpia el campo
+      inputRef.current?.focus();  // Re-enfoca el input para el siguiente cliente
     }
   };
 
@@ -305,6 +310,7 @@ const Asistencia = () => {
                 placeholder="Ingresa la cédula"
                 className="mt-2 text-center"
                 autoFocus
+                ref={inputRef}
               />
               <Button
                 type="submit"
@@ -317,12 +323,13 @@ const Asistencia = () => {
 
             {userMessage && (
               <div
-                className={`mt-4 p-4 rounded-md w-full text-center ${userMessage.type === "success"
+                className={`mt-4 p-4 rounded-md w-full text-center ${
+                  userMessage.type === "success"
                     ? "bg-green-100 text-green-800"
                     : userMessage.type === "warning"
-                      ? "bg-yellow-100 text-yellow-800"
-                      : "bg-red-100 text-red-800"
-                  }`}
+                    ? "bg-yellow-100 text-yellow-800"
+                    : "bg-red-100 text-red-800"
+                }`}
               >
                 <h3 className="font-bold">{userMessage.title}</h3>
                 <p>{userMessage.description}</p>
